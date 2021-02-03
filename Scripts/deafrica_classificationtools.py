@@ -55,7 +55,7 @@ from datacube.utils.geometry import assign_crs
 from datacube_stats.statistics import GeoMedian
 from datacube.utils.rio import configure_s3_access
 from sklearn.cluster import AgglomerativeClustering
-from sklearn.model_selection import KFold, ShuffleSplit
+from sklearn.model_selection import KFold, ShuffleSplit, GroupShuffleSplit, GroupKFold
 from sklearn.model_selection import BaseCrossValidator
 
 import warnings
@@ -1046,18 +1046,18 @@ def spatial_clusters(coordinates,
 
     return cluster_label
 
-
-def SKCV(coordinates,
-         n_splits,
-         cluster_method,
-         kfold_method,
-         test_size,
-         balance,
-         n_groups=None,
-         max_distance=None,
-         train_size=None,
-         random_state=None,
-         **kwargs):
+def SKCV_simple(coordinates,
+                 n_splits,
+                 cluster_method,
+                 kfold_method,
+                 test_size,
+                 train_size=None,
+                 n_groups=None,
+                 max_distance=None,
+                 random_state=None,
+                 verbose=False,
+                 ):
+    
     """
     Generate spatial k-fold cross validation indices using coordinate data.
     This function wraps the 'SpatialShuffleSplit' and 'SpatialKFold' classes.
@@ -1128,45 +1128,44 @@ def SKCV(coordinates,
     generator object _BaseSpatialCrossValidator.split
     
     """
-    # intiate a method
+    
+    # define spatial groupings
+    spatial_groups = spatial_clusters(coordinates=coordinates,
+                                      method=cluster_method,
+                                      max_distance=max_distance,
+                                      n_groups=n_groups,
+                                      verbose=verbose)
+    
+    if n_splits > len(np.unique(spatial_groups)):
+            raise ValueError(
+                "Number of k-fold splits ({}) cannot be greater than the number of "
+                "clusters ({}). Either decrease n_splits or increase the number of "
+                "clusters.")
+    
+    #intiate a splitting method
     if kfold_method == 'SpatialShuffleSplit':
-        splitter = _SpatialShuffleSplit(n_groups=n_groups,
-                                        method=cluster_method,
-                                        coordinates=coordinates,
-                                        max_distance=max_distance,
-                                        test_size=test_size,
-                                        train_size=train_size,
-                                        n_splits=n_splits,
-                                        random_state=random_state,
-                                        balance=balance,
-                                        **kwargs)
-
+        splitter = GroupShuffleSplit(n_splits=n_splits,
+                                     test_size=test_size,
+                                     train_size=train_size,
+                                     random_state=random_state)
+    
     if kfold_method == 'SpatialKFold':
-        splitter = _SpatialKFold(n_groups=n_groups,
-                                 coordinates=coordinates,
-                                 max_distance=max_distance,
-                                 method=cluster_method,
-                                 test_size=test_size,
-                                 n_splits=n_splits,
-                                 random_state=random_state,
-                                 balance=balance,
-                                 **kwargs)
+        splitter = GroupKFold(n_splits=n_splits)
 
-    return splitter
-
+    return splitter, spatial_groups
 
 def spatial_train_test_split(X,
                              y,
                              coordinates,
                              cluster_method,
                              kfold_method,
-                             balance,
-                             test_size=None,
                              n_splits=None,
+                             test_size=None,
                              n_groups=None,
                              max_distance=None,
                              train_size=None,
                              random_state=None,
+                             verbose=False,
                              **kwargs):
     """
     Split arrays into random train and test subsets. Similar to
@@ -1244,20 +1243,27 @@ def spatial_train_test_split(X,
             X_train, X_test, y_train, y_test
             
     """
-
+    
+    # define spatial groupings
+    spatial_groups = spatial_clusters(coordinates=coordinates,
+                                      method=cluster_method,
+                                      max_distance=max_distance,
+                                      n_groups=n_groups,
+                                      verbose=verbose)
+    
+#     if n_splits > len(np.unique(spatial_groups)):
+#             raise ValueError(
+#                 "Number of k-fold splits ({}) cannot be greater than the number of "
+#                 "spatial clusters ({}). Either decrease n_splits or increase the number of "
+#                 "clusters.")
+    
+    #intiate a splitting method
     if kfold_method == 'SpatialShuffleSplit':
-        splitter = _SpatialShuffleSplit(
-            n_groups=n_groups,
-            method=cluster_method,
-            coordinates=coordinates,
-            max_distance=max_distance,
-            test_size=test_size,
-            train_size=train_size,
-            n_splits=1 if n_splits is None else n_splits,
-            random_state=random_state,
-            balance=balance,
-            **kwargs)
-
+        splitter = GroupShuffleSplit(n_splits=n_splits,
+#                                      test_size=test_size,
+#                                      train_size=train_size,
+                                     random_state=random_state)
+    
     if kfold_method == 'SpatialKFold':
         if n_splits is None:
             raise ValueError(
@@ -1268,18 +1274,12 @@ def spatial_train_test_split(X,
                 "With the 'SpatialKFold' method, controlling the test/train ratio "
                 "is better achieved using the 'n_splits' parameter"
             )
-
-        splitter = _SpatialKFold(n_groups=n_groups,
-                                 coordinates=coordinates,
-                                 max_distance=max_distance,
-                                 method=cluster_method,
-                                 n_splits=n_splits,
-                                 random_state=random_state,
-                                 balance=balance,
-                                 **kwargs)
+        
+        splitter = GroupKFold(n_splits=n_splits)
+    
 
     lst = []
-    for train, test in splitter.split(coordinates):
+    for train, test in splitter.split(coordinates, groups=spatial_groups):
         X_tr, X_tt = X[train, :], X[test, :]
         y_tr, y_tt = y[train], y[test]
         lst.extend([X_tr, X_tt, y_tr, y_tt])
